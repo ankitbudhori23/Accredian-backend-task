@@ -1,92 +1,103 @@
 const express = require("express");
+const bcrypt = require("bcrypt");
 const DB = require("../DB");
 const router = express();
 const { body, validationResult } = require("express-validator");
-const Auth = require("./Middleware");
-const jwt = require("jsonwebtoken");
-
-router.get("/", Auth, (req, res) => {
-  DB.getConnection((err, conn) => {
-    if (err) {
-      return res.json({ err: err, data: "DB connection error" });
-    }
-    var date = new Date().toISOString();
-    conn.query(
-      `update interns_leaders set last_active_date=? where id = ?`,
-      [date, req.user.id],
-      (err) => {
-        if (err) {
-          res.json({ err: err, data: "DB connection error" });
-          return;
-        }
-      },
-    );
-    conn.release();
-  });
-  const user = req.user;
-  res.json({ valid: true, data: user });
-});
 
 router.post(
-  "/",
-  [body("username").notEmpty(), body("password").notEmpty()],
+  "/signup",
+  [
+    body("username").notEmpty().withMessage("Username is required"),
+    body("email").notEmpty().isEmail().withMessage("Valid email is required"),
+    body("password").notEmpty().withMessage("Password is required"),
+    body("confirmPassword")
+      .notEmpty()
+      .withMessage("Confirm Password is required"),
+  ],
   (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: "All fields are required",
-      });
+      return res.status(400).json({ errors: errors.array() });
     }
-    DB.getConnection((err, conn) => {
-      if (err) {
-        return res.json({ err: err, data: "DB connection error" });
-      }
-      conn.query(
-        `select id,fname,image,leading_department,admin from interns_leaders where username = ? and BINARY password = ? `,
-        [req.body.username, req.body.password],
-        (err, rers) => {
-          if (err) {
-            return res.json({ err: err, data: "DB connection error" });
-          }
-          if (rers.length > 0) {
-            const payload = {
-              user: rers[0],
-            };
-            jwt.sign(
-              payload,
-              process.env.SECRET_KEY,
-              { expiresIn: "16h" }, // Change to 3600 during production
-              (err, token) => {
-                if (err) throw err;
-                res.status(200).json({ success: true, data: rers[0], token });
-              },
-            );
-          } else {
-            return res
-              .status(500)
-              .json({ success: false, data: "Invalid username and password" });
-          }
-        },
-      );
-      conn.release();
-    });
+    const { username, email, password, confirmPassword } = req.body;
+    if (password !== confirmPassword)
+      return res.status(400).json({ error: "Passwords are not matching!" });
+    DB.query(
+      "SELECT * FROM users WHERE email = ?",
+      [email],
+      (error, results) => {
+        if (error) {
+          return res.status(500).json({ message: "Internal Server Error" });
+        }
 
-    DB.getConnection((err, conn) => {
-      if (err) {
-        return res.json({ err: err, data: "DB connection error" });
-      }
-      var date = new Date().toISOString();
-      conn.query(
-        `update interns_leaders set last_active_date=? where username = ? and password = ?`,
-        [date, req.body.username, req.body.password],
-        (err) => {
+        if (results.length > 0) {
+          return res
+            .status(400)
+            .json({ message: "Email is already registered" });
+        }
+
+        bcrypt.hash(password, 10, (err, hashedPassword) => {
           if (err) {
-            res.json({ err: err, data: "DB connection error" });
-            return;
+            return res.status(500).json({ error: "Internal Server Error" });
           }
-        },
-      );
-    });
+
+          DB.query(
+            "INSERT INTO users (username, email, password) VALUES (?, ?, ?)",
+            [username, email, hashedPassword],
+            (err) => {
+              if (err) {
+                return res
+                  .status(500)
+                  .json({ message: "Internal Server Error" });
+              }
+
+              res.status(201).json({ message: "User registered successfully" });
+            },
+          );
+        });
+      },
+    );
+  },
+);
+
+router.post(
+  "/login",
+  [
+    body("email").notEmpty().isEmail().withMessage("Valid email is required"),
+    body("password").notEmpty().withMessage("Password is required"),
+  ],
+  (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+    const { email, password } = req.body;
+
+    DB.query(
+      "SELECT * FROM users WHERE email = ?",
+      [email],
+      (error, results) => {
+        if (error) {
+          return res.status(500).json({ message: "Internal Server Error" });
+        }
+
+        if (results.length === 0) {
+          return res.status(401).json({ message: "Invalid credentials" });
+        }
+
+        const user = results[0];
+        bcrypt.compare(password, user.password, (err, passwordMatch) => {
+          if (err) {
+            return res.status(500).json({ message: "Internal Server Error" });
+          }
+
+          if (!passwordMatch) {
+            return res.status(401).json({ message: "Invalid credentials" });
+          }
+          res.json({ message: "Login successful" });
+        });
+      },
+    );
   },
 );
 
